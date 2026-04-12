@@ -22,12 +22,22 @@ export const selectProp = (value: string | null | undefined): { select: { name: 
   select: value ? { name: value } : null,
 });
 
+export const checkboxProp = (value: boolean): { checkbox: boolean } => ({
+  checkbox: value,
+});
+
 export const dateProp = (iso: string): { date: { start: string } } => ({
   date: { start: iso },
 });
 
 export const relationProp = (pageId: string | null | undefined): { relation: Array<{ id: string }> } => ({
   relation: pageId ? [{ id: pageId }] : [],
+});
+
+export const fileProp = (
+  url: string | null | undefined,
+): { files: Array<{ type: "external"; name: string; external: { url: string } }> } => ({
+  files: url ? [{ type: "external", name: url.slice(0, 100), external: { url } }] : [],
 });
 
 export const truncateForNotion = (value: string, max = 2000): string => {

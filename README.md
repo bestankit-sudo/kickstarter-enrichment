@@ -1,90 +1,100 @@
-# Kickstarter Enrichment CLI
+# Kickstarter Enrichment Pipeline
 
-Standalone TypeScript CLI that enriches Kickstarter campaign contact data stored in Notion. Runs a two-stage pipeline:
+A precision outreach-path discovery system for Kickstarter campaigns. Finds the best reachable contact (LinkedIn profile, verified email, or company channel) for each campaign company.
 
-1. **Company enrichment** — extracts company domain and social media profiles from the external website linked in a Kickstarter campaign
-2. **People enrichment** — identifies founders, C-level, and director-level contacts via Proxycurl role lookups
+Built with TypeScript, Apollo, OpenAI GPT 5.4, Brave Search, and Notion.
 
-## How it works
+## Quick Start
 
-```
-Kickstarter DB (Notion)
-  → reads campaign name, URL, external link, founder/creator
-  → scrapes external website for domain, socials, email
-  → writes to Company Enriched DB (Notion)
-  → looks up people by role via Proxycurl
-  → writes to People Enriched DB (Notion)
-```
-
-### Services used
-
-| Service | Purpose |
-|---------|---------|
-| Notion API | Reads campaigns, writes enriched company + people records |
-| Proxycurl | Role-based person lookup (CEO, Founder, CTO, COO/CMO) |
-| Website scraping | Extracts domain, social profiles (LinkedIn, X, Instagram, Facebook, YouTube, TikTok), and business emails |
-
-## Setup
+### 1. Install
 
 ```bash
+git clone <repo-url>
+cd kickstarter-enrichment
 npm install
-cp .env.example .env   # fill in your keys
 ```
 
-Env values load from two sources:
-1. Local `.env` in project root (optional)
-2. `SECRETS_ENV_PATH` (defaults to `~/.config/ankit-openclaw/secrets.env`)
+### 2. Configure API Keys
 
-### Environment variables
+```bash
+cp .env.example .env
+```
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `NOTION_API_KEY` | Yes | Notion integration token |
-| `NOTION_KICKSTARTER_DB_ID` | Yes | Source Kickstarter database ID |
-| `NOTION_COMPANY_ENRICHED_DB_ID` | Yes | Company enrichment output database ID |
-| `NOTION_PEOPLE_ENRICHED_DB_ID` | Yes | People enrichment output database ID |
-| `PROXYCURL_API_KEY` | Yes | Proxycurl API key for role lookups |
-| `SECRETS_ENV_PATH` | No | Shared secrets file (default: `~/.config/ankit-openclaw/secrets.env`) |
+Edit `.env` and add your keys:
+- **Notion** — [Create an integration](https://www.notion.so/my-integrations), share a parent page with it
+- **Apollo** — [Sign up](https://app.apollo.io/) (Basic plan for People Search)
+- **OpenAI** — [Get API key](https://platform.openai.com/api-keys)
+- **Brave Search** — [Get API key](https://brave.com/search/api/)
+
+### 3. Set Up Notion Databases
+
+```bash
+npm run setup
+```
+
+This creates 3 interconnected databases in your Notion workspace:
+- **Kickstarter Campaign Outreach** — your source data (add campaigns here)
+- **Company Enriched** — company profiles, socials, emails
+- **People Enriched** — contact persons with LinkedIn and verified emails
+
+### 4. Add Your Campaigns
+
+Open the Kickstarter Campaign Outreach database in Notion and add rows:
+- **Campaign Name** — the Kickstarter project name
+- **Kickstarter URL** — full Kickstarter project URL
+- **External Link** — company website URL (if known)
+- **Founder / Creator** — founder name(s)
+
+### 5. Run the Pipeline
+
+```bash
+# Stage 1: Scrape websites, extract socials and emails
+npm run enrich:companies
+
+# Stage 2: Find people via Apollo + AI scoring
+npm run enrich:people
+
+# Stage 2b: Upgrade SERP-found candidates with full Apollo profiles
+npx tsx src/index.ts reveal-serp
+```
+
+## How It Works
+
+The pipeline uses a cost-optimized multi-pass approach:
+
+1. **Search is free** — Apollo search returns metadata at no cost
+2. **AI decides who to reveal** — GPT 5.4 scores candidates before spending credits
+3. **Only reveal the best** — max 2 reveals per company per pass
+4. **9 AI checkpoints** — validate, score, quality-gate, and merge-check every data point
+
+See [PROCESS.md](PROCESS.md) for the complete technical documentation.
 
 ## Commands
 
-```bash
-# People enrichment
-npm run enrich:people -- --dry-run --limit 1   # preview without writes
-npm run enrich:people -- --limit 5              # enrich 5 campaigns
-npm run enrich:people -- --url "https://..."    # enrich one specific campaign
-npm run enrich:people -- --force --limit 1      # reprocess already-done records
+| Command | Description |
+|---------|-------------|
+| `npm run setup` | Create Notion databases (first time only) |
+| `npm run enrich:companies` | Stage 1: website scraping + Apollo org resolution |
+| `npm run enrich:people` | Stage 2: person discovery + AI scoring |
+| `npm run enrich:people -- --force` | Re-process all records including done |
+| `npm run enrich:people -- --limit 5` | Process first 5 companies only |
+| `npm run enrich:people -- --dry-run` | Preview without making API calls |
+| `npx tsx src/index.ts reveal-serp` | Reveal SERP candidates via Apollo |
+
+## Architecture
+
+```
+Kickstarter Campaign Outreach (your input)
+        ↕ Source Campaign
+Company Enriched (Stage 1 output)
+        ↕ Company + Best Person
+People Enriched (Stage 2 output)
+        ↕ Source Campaign
 ```
 
-### Flags
+## Cost
 
-| Flag | Description |
-|------|-------------|
-| `--dry-run` | No external API calls, no Notion writes — preview only |
-| `--force` | Reprocess records already marked as `done` |
-| `--limit N` | Process only first N campaigns |
-| `--url "..."` | Process only the campaign matching this Kickstarter URL |
-
-### Roles written per company
-
-| Role | Source |
-|------|--------|
-| Founder | Parsed from Kickstarter "Founder / Creator" field |
-| Co-Founder | One row per additional founder (split by `,`, `;`, `and`, `&`) |
-| C-Level executive | Proxycurl role lookup |
-| Director-level executive | Proxycurl role lookup |
-
-## Low-credit validation path
-
-To test with minimal Proxycurl API usage:
-
-1. Ensure Company Enriched DB already has rows with `done` or `partial` status and a non-empty company domain
-2. `npm run enrich:people -- --limit 1`
-
-## Tests
-
-```bash
-npm test
-```
-
-Covers: founder name parsing, URL normalization, domain extraction, social scraping, email extraction.
+For 51 companies:
+- **Apollo credits**: ~60 reveals (optimized from ~200)
+- **OpenAI**: ~$3
+- **Brave Search**: ~200 queries

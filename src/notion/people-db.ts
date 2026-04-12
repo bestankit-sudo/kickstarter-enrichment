@@ -1,32 +1,44 @@
 import { NotionService } from "./client.js";
-import { richTextProp, titleProp } from "./property.js";
-import { getTextOrUrl } from "./readers.js";
-import type { EnrichmentStatus, MatchConfidence, PersonRoleTarget, PersonRow } from "./types.js";
+import {
+  checkboxProp,
+  numberProp,
+  relationProp,
+  richTextProp,
+  selectProp,
+  titleProp,
+  truncateForNotion,
+} from "./property.js";
+import { getRichText, getSelect, getTextOrUrl } from "./readers.js";
+import type {
+  DiscoveryMethod,
+  MatchConfidence,
+  PeopleEnrichStatus,
+  PersonRow,
+} from "./types.js";
 
-const NOT_FOUND = "Not Found";
-
-type PeopleUpsertInput = {
-  personKey: string;
+export type PeopleUpsertInput = {
   fullName: string;
   firstName: string;
   lastName: string;
-  kickstarterUrlKey: string;
-  kickstarterUrlRaw: string;
-  campaignName: string;
-  companyName: string;
-  companyDomain: string;
+  headline: string;
+  companyPageId: string;
+  sourceCampaignPageId: string;
+  city: string;
   country: string;
-  roleTarget: PersonRoleTarget;
-  roleFinal: string;
   jobTitle: string;
   linkedInPersonUrl: string;
-  workEmail: string | null;
-  emailStatus: "verified" | "risky" | "not_found";
-  status: EnrichmentStatus;
+  apolloPersonId?: string;
+  twitterXUrl?: string;
+  discoveryMethod?: DiscoveryMethod;
+  candidateRank?: number;
+  isPrimaryCandidate?: boolean;
+  evidenceSummary?: string;
+  workEmails: string | null;
+  emailStatus: string;
+  status: PeopleEnrichStatus;
   matchConfidence: MatchConfidence;
-  sourceNotes: string;
-  sourcesUsed: string;
-  companyEnrichedPageId: string;
+  matchNotes: string;
+  lastError?: string;
 };
 
 export class PeopleDb {
@@ -35,46 +47,66 @@ export class PeopleDb {
     private readonly databaseId: string,
   ) {}
 
-  async findByPersonKey(personKey: string): Promise<PersonRow | null> {
-    const results = await this.notion.searchByProperty(this.databaseId, "Person Key", personKey);
+  async findByApolloPersonId(apolloPersonId: string): Promise<PersonRow | null> {
+    if (!apolloPersonId) return null;
+    const results = await this.notion.searchByProperty(this.databaseId, "Apollo Person ID", apolloPersonId);
     const first = results[0];
-    if (!first) {
-      return null;
-    }
-    return {
-      pageId: first.id,
-      personKey: getTextOrUrl(first, "Person Key"),
-      status: (getTextOrUrl(first, "Enrich Status") || "pending") as EnrichmentStatus,
-    };
+    if (!first) return null;
+    return readPersonRow(first);
+  }
+
+  async findByFullName(fullName: string): Promise<PersonRow | null> {
+    if (!fullName) return null;
+    const results = await this.notion.searchByProperty(this.databaseId, "Full Name", fullName);
+    const first = results[0];
+    if (!first) return null;
+    return readPersonRow(first);
   }
 
   async upsert(existingPageId: string | null, input: PeopleUpsertInput): Promise<{ pageId: string }> {
+    let existingMatchNotes = "";
+    if (existingPageId) {
+      const results = await this.notion.searchByProperty(this.databaseId, "Full Name", input.fullName);
+      if (results[0]) {
+        existingMatchNotes = getRichText(results[0], "Match Notes");
+      }
+    }
+
+    const timestampedNotes = input.matchNotes
+      ? `[${new Date().toISOString()}] ${input.matchNotes}`
+      : "";
+    const mergedNotes = existingMatchNotes
+      ? `${existingMatchNotes}\n${timestampedNotes}`
+      : timestampedNotes;
+
     const properties: Record<string, unknown> = {
-      "Full Name": richTextProp(input.fullName),
-      "Person Key": titleProp(input.personKey),
-      "Kickstarter Url Key": richTextProp(input.kickstarterUrlKey),
-      "Campaign Name": richTextProp(input.campaignName || NOT_FOUND),
-      "Company Name": richTextProp(input.companyName || NOT_FOUND),
-      "Company Domain": richTextProp(input.companyDomain || NOT_FOUND),
-      Country: richTextProp(input.country || NOT_FOUND),
-      "Role Target": richTextProp(input.roleTarget),
-      "Role Final": richTextProp(input.roleFinal || NOT_FOUND),
-      "Job Title": richTextProp(input.jobTitle || NOT_FOUND),
-      "Linkedin Person Url": richTextProp(input.linkedInPersonUrl || NOT_FOUND),
-      "Work Email": richTextProp(input.workEmail || NOT_FOUND),
-      "Email Status": richTextProp(input.emailStatus),
-      "Enrich Status": richTextProp(input.status),
-      "Match Confidence": richTextProp(input.matchConfidence),
-      "Match Notes": richTextProp(`${input.sourceNotes}${input.sourcesUsed ? ` | ${input.sourcesUsed}` : ""}`),
-      "Last Enriched At": richTextProp(new Date().toISOString()),
+      "Full Name": titleProp(input.fullName || "Unknown"),
+      "Company": relationProp(input.companyPageId),
+      "Source Campaign": relationProp(input.sourceCampaignPageId),
       "First Name": richTextProp(input.firstName),
       "Last Name": richTextProp(input.lastName),
-      "Twitter X Url": richTextProp(NOT_FOUND),
-      "Instagram Url": richTextProp(NOT_FOUND),
-      "Facebook Url": richTextProp(NOT_FOUND),
-      "Youtube Url": richTextProp(NOT_FOUND),
-      "Tiktok Url": richTextProp(NOT_FOUND),
+      "Headline": richTextProp(input.headline || ""),
+      "Linkedin Person Url": richTextProp(input.linkedInPersonUrl || ""),
+      "Apollo Person ID": richTextProp(input.apolloPersonId || ""),
+      "Job Title": richTextProp(input.jobTitle || ""),
+      "Discovery Method": selectProp(input.discoveryMethod || null),
+      "Candidate Rank": numberProp(input.candidateRank ?? null),
+      "Is Primary Candidate": checkboxProp(input.isPrimaryCandidate ?? false),
+      "Work Emails": richTextProp(input.workEmails || ""),
+      "Email Status": richTextProp(input.emailStatus || ""),
+      "Match Confidence": selectProp(input.matchConfidence),
+      "Evidence Summary": richTextProp(input.evidenceSummary || ""),
+      "Match Notes": richTextProp(truncateForNotion(mergedNotes)),
+      "Enrich Status": selectProp(input.status),
+      "City": richTextProp(input.city || ""),
+      "Country": richTextProp(input.country || ""),
+      "Twitter X Url": richTextProp(input.twitterXUrl || ""),
+      "Last Enriched At": richTextProp(new Date().toISOString()),
     };
+
+    if (input.lastError) {
+      properties["Last Error"] = richTextProp(input.lastError);
+    }
 
     if (existingPageId) {
       await this.notion.updatePage(existingPageId, properties);
@@ -84,4 +116,29 @@ export class PeopleDb {
     const created = await this.notion.createPage(this.databaseId, properties);
     return { pageId: created.id };
   }
+}
+
+function readPersonRow(page: { id: string; [key: string]: unknown }): PersonRow {
+  return {
+    pageId: page.id,
+    personKey: "",
+    status: (getSelect(page, "Enrich Status") || getRichText(page, "Enrich Status") || "pending") as PeopleEnrichStatus,
+    apolloPersonId: getRichText(page, "Apollo Person ID"),
+    linkedinPersonUrl: getRichText(page, "Linkedin Person Url"),
+    matchConfidence: (getSelect(page, "Match Confidence") || "low") as MatchConfidence,
+    isPrimaryCandidate: false,
+    candidateRank: null,
+    discoveryMethod: (getSelect(page, "Discovery Method") || "") as DiscoveryMethod | "",
+    outreachRelevance: "",
+    evidenceSummary: getRichText(page, "Evidence Summary"),
+    workEmails: getRichText(page, "Work Emails"),
+    emailStatus: getRichText(page, "Email Status"),
+    fullName: getTextOrUrl(page, "Full Name"),
+    firstName: getRichText(page, "First Name"),
+    lastName: getRichText(page, "Last Name"),
+    headline: getRichText(page, "Headline"),
+    city: getRichText(page, "City"),
+    country: getRichText(page, "Country"),
+    photoUrl: "",
+  };
 }

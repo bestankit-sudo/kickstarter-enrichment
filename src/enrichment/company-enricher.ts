@@ -1,5 +1,6 @@
 import { CompanyDb } from "../notion/company-db.js";
 import { KickstarterDb } from "../notion/kickstarter-db.js";
+import { searchOrganisation } from "./apollo-client.js";
 import { scrapeWebsite } from "./website-scraper.js";
 import { extractDomain } from "../utils/url.js";
 import { logger } from "../utils/logger.js";
@@ -36,6 +37,7 @@ const deriveStatusAndConfidence = (input: {
 export async function enrichCompanies(options: {
   kickstarterDb: KickstarterDb;
   companyDb: CompanyDb;
+  apolloApiKey: string;
   force: boolean;
   dryRun: boolean;
   limit?: number;
@@ -51,7 +53,7 @@ export async function enrichCompanies(options: {
   const plans: Array<(typeof capped)[number]> = [];
 
   for (const campaign of capped) {
-    const existing = await options.companyDb.findByKickstarterUrlKey(campaign.kickstarterUrlKey);
+    const existing = await options.companyDb.findByCampaignName(campaign.campaignName);
     if (existing && shouldSkipStatus(existing.status, options.force)) {
       alreadyDone += 1;
       continue;
@@ -76,23 +78,51 @@ export async function enrichCompanies(options: {
 
   for (let i = 0; i < plans.length; i += 1) {
     const campaign = plans[i];
-    const existing = await options.companyDb.findByKickstarterUrlKey(campaign.kickstarterUrlKey);
+    const existing = await options.companyDb.findByCampaignName(campaign.campaignName);
 
     const companyDomain = extractDomain(campaign.externalLink || "");
     if (!companyDomain) {
       needsReview += 1;
       await options.companyDb.upsert(existing?.pageId ?? null, {
         campaignName: campaign.campaignName,
-        kickstarterUrlRaw: campaign.kickstarterUrlRaw,
-        kickstarterUrlKey: campaign.kickstarterUrlKey,
+        sourceCampaignPageId: campaign.pageId,
         externalLink: campaign.externalLink,
         companyDomain: "",
+        companyCountry: "",
         socials: { linkedin: null, x: null, instagram: null, facebook: null, youtube: null, tiktok: null },
         genericBusinessEmail: null,
         status: "needs_review",
         matchConfidence: "low",
         sourceNotes: "No valid External Link",
       });
+
+      // Apollo Org exception: domain missing but campaign name exists
+      if (campaign.campaignName) {
+        const org = await searchOrganisation(options.apolloApiKey, {
+          name: campaign.campaignName,
+        });
+        if (org) {
+          const refetched = await options.companyDb.findByCampaignName(campaign.campaignName);
+          if (refetched) {
+            await options.companyDb.upsert(refetched.pageId, {
+              campaignName: campaign.campaignName,
+              sourceCampaignPageId: campaign.pageId,
+              externalLink: campaign.externalLink,
+              companyDomain: org.domain || "",
+              socials: { linkedin: null, x: null, instagram: null, facebook: null, youtube: null, tiktok: null },
+              genericBusinessEmail: null,
+              apolloOrgId: org.id,
+              employeeCount: org.employee_count,
+              status: org.domain ? "partial" : "needs_review",
+              matchConfidence: org.domain ? "medium" : "low",
+              sourceNotes: `Apollo Org resolved: ${org.name} (${org.domain || "no domain"})`,
+              sourcesUsed: "apollo_org",
+            });
+            logger.info(`[${String(i + 1).padStart(3)}/${plans.length}] ⚡ ${campaign.campaignName} -> Apollo Org resolved (${org.domain || "no domain"})`);
+          }
+        }
+      }
+
       logger.warn(`[${String(i + 1).padStart(3)}/${plans.length}] ⊘ ${campaign.campaignName} -> needs_review (no External Link)`);
       continue;
     }
@@ -105,37 +135,56 @@ export async function enrichCompanies(options: {
       hasEmail: Boolean(scrape.businessEmail),
     });
 
+    let sourcesUsed = "website_scrape";
+
     await options.companyDb.upsert(existing?.pageId ?? null, {
       campaignName: campaign.campaignName,
-      kickstarterUrlRaw: campaign.kickstarterUrlRaw,
-      kickstarterUrlKey: campaign.kickstarterUrlKey,
+      sourceCampaignPageId: campaign.pageId,
       externalLink: campaign.externalLink,
       companyDomain,
+      companyCountry: "",
       socials: scrape.socials,
       genericBusinessEmail: scrape.businessEmail,
       status: summary.status,
       matchConfidence: summary.confidence,
       sourceNotes: scrape.sourceNotes,
+      sourcesUsed,
     });
+
+    // Apollo Org exception: scrape failed and campaign is promising
+    if (summary.status === "failed" && campaign.campaignName) {
+      const org = await searchOrganisation(options.apolloApiKey, {
+        name: campaign.campaignName,
+        domain: companyDomain,
+      });
+      if (org) {
+        const refetched = await options.companyDb.findByCampaignName(campaign.campaignName);
+        if (refetched) {
+          sourcesUsed = "website_scrape|apollo_org";
+          await options.companyDb.upsert(refetched.pageId, {
+            campaignName: campaign.campaignName,
+            sourceCampaignPageId: campaign.pageId,
+                  externalLink: campaign.externalLink,
+            companyDomain: org.domain || companyDomain,
+            socials: scrape.socials,
+            genericBusinessEmail: scrape.businessEmail,
+            apolloOrgId: org.id,
+            employeeCount: org.employee_count,
+            status: "partial",
+            matchConfidence: "medium",
+            sourceNotes: `Website failed; Apollo Org resolved: ${org.name}`,
+            sourcesUsed,
+          });
+          logger.info(`[${String(i + 1).padStart(3)}/${plans.length}] ⚡ ${campaign.campaignName} -> Apollo Org fallback (${org.domain || "no domain"})`);
+        }
+      }
+    }
 
     if (summary.status === "done") {
       done += 1;
       logger.info(
         `[${String(i + 1).padStart(3)}/${plans.length}] ✓ ${campaign.campaignName} -> done (${socialCount} socials, ${scrape.businessEmail ? 1 : 0} email)`,
       );
-      if (summary.confidence === "high") {
-        logger.info(
-          `[high-confidence-response] ${JSON.stringify({
-            campaignName: campaign.campaignName,
-            kickstarterUrl: campaign.kickstarterUrlRaw,
-            externalLink: campaign.externalLink,
-            companyDomain,
-            socials: scrape.socials,
-            genericBusinessEmail: scrape.businessEmail,
-            sourceNotes: scrape.sourceNotes,
-          })}`,
-        );
-      }
     } else if (summary.status === "partial") {
       partial += 1;
       logger.warn(`[${String(i + 1).padStart(3)}/${plans.length}] ✓ ${campaign.campaignName} -> partial (no socials found)`);

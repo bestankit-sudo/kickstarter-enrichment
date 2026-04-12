@@ -7,15 +7,20 @@
     "node": ">=20"
   },
   "scripts": {
+    "setup": "tsx src/setup.ts",
+    "enrich:companies": "tsx src/index.ts enrich-companies",
     "enrich:people": "tsx src/index.ts enrich-people",
+    "enrich:emails": "tsx src/index.ts enrich-emails",
     "test": "vitest run --config ./vitest.config.ts",
     "test:watch": "vitest --config ./vitest.config.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
     "@notionhq/client": "^2.2.15",
     "axios": "^1.11.0",
     "commander": "^14.0.1",
-    "dotenv": "^17.2.2"
+    "dotenv": "^17.2.2",
+    "openai": "^6.34.0"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
