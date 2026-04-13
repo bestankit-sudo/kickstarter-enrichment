@@ -2,7 +2,6 @@ import type {
   BestOutreachPath,
   CompanyRow,
   MatchConfidence,
-  PreferredOutreachPath,
 } from "../notion/types.js";
 
 type CandidateInfo = {
@@ -55,38 +54,3 @@ export function bestCompanyOutreachPath(
   return null;
 }
 
-export function preferredPersonOutreachPath(
-  person: {
-    linkedinUrl: string;
-    confidence: MatchConfidence;
-    workEmails: string;
-  },
-  companyRow: CompanyRow,
-): PreferredOutreachPath {
-  // 1. LinkedIn + high confidence
-  if (person.linkedinUrl && person.confidence === "high") {
-    return "linkedin";
-  }
-
-  // 2. Work email
-  if (person.workEmails) {
-    return "work_email";
-  }
-
-  // 3. LinkedIn + medium confidence
-  if (person.linkedinUrl && person.confidence === "medium") {
-    return "linkedin";
-  }
-
-  // 4. Fallback to company email
-  if (companyRow.genericBusinessEmail) {
-    return "company_email";
-  }
-
-  // 5. Fallback to social DM or contact form
-  if (companyRow.instagramUrl || companyRow.tiktokUrl) {
-    return "social_dm";
-  }
-
-  return "contact_form";
-}

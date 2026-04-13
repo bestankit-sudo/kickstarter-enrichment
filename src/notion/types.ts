@@ -31,13 +31,6 @@ export type BestOutreachPath =
   | "social_dm"
   | "contact_form";
 
-export type PreferredOutreachPath =
-  | "linkedin"
-  | "work_email"
-  | "company_email"
-  | "social_dm"
-  | "contact_form";
-
 export type OutreachRelevance =
   | "founder"
   | "co_founder"
@@ -51,8 +44,6 @@ export type DiscoveryMethod =
   | "serp_fallback"
   | "manual"
   | "founder_direct";
-
-export type PersonRoleTarget = "Founder" | "Co-Founder" | "C Level executive" | "Director level executive";
 
 export type KickstarterCampaign = {
   pageId: string;
