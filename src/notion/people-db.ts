@@ -64,49 +64,26 @@ export class PeopleDb {
   }
 
   async upsert(existingPageId: string | null, input: PeopleUpsertInput): Promise<{ pageId: string }> {
-    let existingMatchNotes = "";
-    if (existingPageId) {
-      const results = await this.notion.searchByProperty(this.databaseId, "Full Name", input.fullName);
-      if (results[0]) {
-        existingMatchNotes = getRichText(results[0], "Match Notes");
-      }
-    }
-
-    const timestampedNotes = input.matchNotes
-      ? `[${new Date().toISOString()}] ${input.matchNotes}`
-      : "";
-    const mergedNotes = existingMatchNotes
-      ? `${existingMatchNotes}\n${timestampedNotes}`
-      : timestampedNotes;
-
     const properties: Record<string, unknown> = {
       "Full Name": titleProp(input.fullName || "Unknown"),
-      "Company": relationProp(input.companyPageId),
-      "Source Campaign": relationProp(input.sourceCampaignPageId),
+      "Linked Company": relationProp(input.companyPageId),
+      "Campaigns": relationProp(input.sourceCampaignPageId),
       "First Name": richTextProp(input.firstName),
       "Last Name": richTextProp(input.lastName),
       "Headline": richTextProp(input.headline || ""),
       "Linkedin Person Url": richTextProp(input.linkedInPersonUrl || ""),
       "Apollo Person ID": richTextProp(input.apolloPersonId || ""),
       "Job Title": richTextProp(input.jobTitle || ""),
-      "Discovery Method": selectProp(input.discoveryMethod || null),
       "Candidate Rank": numberProp(input.candidateRank ?? null),
       "Is Primary Candidate": checkboxProp(input.isPrimaryCandidate ?? false),
       "Work Emails": richTextProp(input.workEmails || ""),
       "Email Status": richTextProp(input.emailStatus || ""),
       "Match Confidence": selectProp(input.matchConfidence),
-      "Evidence Summary": richTextProp(input.evidenceSummary || ""),
-      "Match Notes": richTextProp(truncateForNotion(mergedNotes)),
       "Enrich Status": selectProp(input.status),
       "City": richTextProp(input.city || ""),
       "Country": richTextProp(input.country || ""),
       "Twitter X Url": richTextProp(input.twitterXUrl || ""),
-      "Last Enriched At": richTextProp(new Date().toISOString()),
     };
-
-    if (input.lastError) {
-      properties["Last Error"] = richTextProp(input.lastError);
-    }
 
     if (existingPageId) {
       await this.notion.updatePage(existingPageId, properties);

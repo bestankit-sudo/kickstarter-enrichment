@@ -6,6 +6,7 @@ export type AppConfig = {
   notionKickstarterDbId: string;
   notionCompanyEnrichedDbId: string;
   notionPeopleEnrichedDbId: string;
+  notionExtractionsDbId: string;
   apolloApiKey: string;
   braveSearchApiKey: string;
   openaiApiKey: string;
@@ -57,6 +58,7 @@ const readRequired = (secretsEnvPath: string): AppConfig => {
   }
 
   const optional = {
+    notionExtractionsDbId: process.env.NOTION_EXTRACTIONS_DB_ID?.trim() ?? "0d9490bf83924811acd83cd555f8c8fb",
     proxycurlApiKey: process.env.PROXYCURL_API_KEY?.trim() ?? "",
     emailApiAppDomain: process.env.EMAILAPI_APP_DOMAIN?.trim() ?? "",
     emailApiAuthKey: process.env.EMAILAPI_AUTH_KEY?.trim() ?? "",

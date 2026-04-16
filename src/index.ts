@@ -6,6 +6,7 @@ import { NotionService } from "./notion/client.js";
 import { KickstarterDb } from "./notion/kickstarter-db.js";
 import { CompanyDb } from "./notion/company-db.js";
 import { PeopleDb } from "./notion/people-db.js";
+import { ExtractionDb } from "./notion/extraction-db.js";
 import { enrichPeople } from "./enrichment/people-enricher.js";
 import { enrichCompanies } from "./enrichment/company-enricher.js";
 import { logger } from "./utils/logger.js";
@@ -45,6 +46,7 @@ const run = async (commandName: string, options: CommonOptions): Promise<void> =
   const kickstarterDb = new KickstarterDb(notion, config.notionKickstarterDbId);
   const companyDb = new CompanyDb(notion, config.notionCompanyEnrichedDbId);
   const peopleDb = new PeopleDb(notion, config.notionPeopleEnrichedDbId);
+  const extractionDb = new ExtractionDb(notion, config.notionExtractionsDbId);
 
   logger.info(`[${commandName}] Config loaded from env + ${config.secretsEnvPath}`);
 
@@ -60,6 +62,7 @@ const run = async (commandName: string, options: CommonOptions): Promise<void> =
     await enrichCompanies({
       kickstarterDb,
       companyDb,
+      extractionDb,
       apolloApiKey: config.apolloApiKey,
       force: Boolean(options.force),
       dryRun: Boolean(options.dryRun),
@@ -70,6 +73,7 @@ const run = async (commandName: string, options: CommonOptions): Promise<void> =
     await enrichPeople({
       companyDb,
       peopleDb,
+      extractionDb,
       kickstarterDb,
       apolloApiKey: config.apolloApiKey,
       braveSearchApiKey: config.braveSearchApiKey,

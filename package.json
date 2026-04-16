@@ -8,6 +8,7 @@
   },
   "scripts": {
     "setup": "tsx src/setup.ts",
+    "scrape:kickstarter": "tsx src/enrichment/kickstarter-scraper.ts",
     "enrich:companies": "tsx src/index.ts enrich-companies",
     "enrich:people": "tsx src/index.ts enrich-people",
     "enrich:emails": "tsx src/index.ts enrich-emails",

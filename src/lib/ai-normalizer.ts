@@ -354,12 +354,18 @@ Check and return JSON ONLY:
   "issues": ["list of specific issues found"]
 }
 
-Flag issues like:
-- Email domain doesn't match company domain "${targetDomain}"
-- LinkedIn URL is not a person profile (should be /in/)
+ONLY reject (pass=false) if:
 - Person appears to be a bot, mascot, or placeholder
-- Data seems auto-generated or templated
-Pass if the person looks like a real human with relevant data.`,
+- Person is clearly at the WRONG company (not a subsidiary, rebrand, or related entity)
+- LinkedIn URL is invalid or not a person profile
+- Name is missing or fake
+
+DO pass (pass=true) even if:
+- Email is missing (LinkedIn-only contacts are acceptable for outreach)
+- Email domain doesn't match (person may use personal email)
+- Title or headline is missing
+- Company from Apollo is unknown (expected for SERP-sourced candidates)
+Pass if the person looks like a real human who could plausibly be associated with the target company.`,
         },
       ],
     });
@@ -369,7 +375,7 @@ Pass if the person looks like a real human with relevant data.`,
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]) as { pass: boolean; issues: string[] };
       issues.push(...(parsed.issues || []));
-      return { pass: parsed.pass !== false && issues.length === 0, issues };
+      return { pass: parsed.pass !== false, issues };
     }
   } catch {
     // AI check failed — pass with structural issues only

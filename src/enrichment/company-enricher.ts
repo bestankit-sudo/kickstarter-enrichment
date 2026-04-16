@@ -1,5 +1,6 @@
 import { CompanyDb } from "../notion/company-db.js";
 import { KickstarterDb } from "../notion/kickstarter-db.js";
+import { ExtractionDb } from "../notion/extraction-db.js";
 import { searchOrganisation } from "./apollo-client.js";
 import { scrapeWebsite } from "./website-scraper.js";
 import { extractDomain } from "../utils/url.js";
@@ -37,6 +38,7 @@ const deriveStatusAndConfidence = (input: {
 export async function enrichCompanies(options: {
   kickstarterDb: KickstarterDb;
   companyDb: CompanyDb;
+  extractionDb: ExtractionDb;
   apolloApiKey: string;
   force: boolean;
   dryRun: boolean;
@@ -145,6 +147,7 @@ export async function enrichCompanies(options: {
       companyCountry: "",
       socials: scrape.socials,
       genericBusinessEmail: scrape.businessEmail,
+      contactFormUrl: scrape.contactFormUrl,
       status: summary.status,
       matchConfidence: summary.confidence,
       sourceNotes: scrape.sourceNotes,
@@ -178,6 +181,23 @@ export async function enrichCompanies(options: {
           logger.info(`[${String(i + 1).padStart(3)}/${plans.length}] ⚡ ${campaign.campaignName} -> Apollo Org fallback (${org.domain || "no domain"})`);
         }
       }
+    }
+
+    // Write extraction record
+    const companyRecord = await options.companyDb.findByCampaignName(campaign.campaignName);
+    if (companyRecord) {
+      await options.extractionDb.create({
+        title: `Website scrape: ${campaign.campaignName}`,
+        type: "company",
+        source: sourcesUsed.includes("apollo_org") ? "apollo_org" : "website_scrape",
+        status: summary.status === "failed" ? "rejected" : "accepted",
+        rawData: JSON.stringify({ socials: scrape.socials, businessEmail: scrape.businessEmail, contactFormUrl: scrape.contactFormUrl }),
+        sourceQuery: campaign.externalLink,
+        sourceNotes: scrape.sourceNotes || `${socialCount} socials, ${scrape.businessEmail ? 1 : 0} email`,
+        creditsUsed: sourcesUsed.includes("apollo_org") ? 1 : 0,
+        companyPageId: companyRecord.pageId,
+        campaignPageId: campaign.pageId,
+      });
     }
 
     if (summary.status === "done") {

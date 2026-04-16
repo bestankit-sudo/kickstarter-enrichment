@@ -111,21 +111,6 @@ export class CompanyDb {
   }
 
   async upsert(existingPageId: string | null, input: CompanyUpsertInput): Promise<{ pageId: string }> {
-    let existingSourceNotes = "";
-    if (existingPageId) {
-      const existing = await this.notion.searchByProperty(this.databaseId, "Campaign Name", input.campaignName);
-      if (existing[0]) {
-        existingSourceNotes = getRichText(existing[0], "Source Notes");
-      }
-    }
-
-    const timestampedNotes = input.sourceNotes
-      ? `[${new Date().toISOString()}] ${input.sourceNotes}`
-      : "";
-    const mergedNotes = existingSourceNotes
-      ? `${existingSourceNotes}\n${timestampedNotes}`
-      : timestampedNotes;
-
     const properties: Record<string, unknown> = {
       "Campaign Name": titleProp(input.campaignName),
       "External Link": richTextProp(input.externalLink),
@@ -139,13 +124,10 @@ export class CompanyDb {
       "Generic Business Email": richTextProp(input.genericBusinessEmail || ""),
       "Enrichment Status": selectProp(input.status),
       "Match Confidence": selectProp(input.matchConfidence),
-      "Source Notes": richTextProp(truncateForNotion(mergedNotes)),
-      "Sources Used": richTextProp(input.sourcesUsed ?? "website_scrape"),
-      "Last Checked At": dateProp(new Date().toISOString()),
     };
 
     if (input.sourceCampaignPageId) {
-      properties["Source Campaign"] = relationProp(input.sourceCampaignPageId);
+      properties["Campaigns"] = relationProp(input.sourceCampaignPageId);
     }
     if (input.companyName) properties["Company Name"] = richTextProp(input.companyName);
     if (input.companyDescription) properties["Company Description"] = richTextProp(input.companyDescription);

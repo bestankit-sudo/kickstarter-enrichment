@@ -1,6 +1,7 @@
 import { CompanyDb } from "../notion/company-db.js";
 import { KickstarterDb } from "../notion/kickstarter-db.js";
 import { PeopleDb } from "../notion/people-db.js";
+import { ExtractionDb } from "../notion/extraction-db.js";
 import type { PeopleUpsertInput } from "../notion/people-db.js";
 import {
   searchPeopleMetadata,
@@ -43,6 +44,7 @@ import type {
 type EnrichPeopleOptions = {
   companyDb: CompanyDb;
   peopleDb: PeopleDb;
+  extractionDb: ExtractionDb;
   kickstarterDb: KickstarterDb;
   apolloApiKey: string;
   braveSearchApiKey: string;
@@ -380,6 +382,30 @@ async function discoverLinkedInTarget(
       workEmails: candidate.email || null, emailStatus: candidate.email_status || "not_found",
       status: personStatus, matchConfidence: candidate.confidence,
       matchNotes: `${discoveryMethod} | ${candidate.evidence_summary}${outreachBrief ? ` | Outreach: ${outreachBrief}` : ""}`,
+    });
+
+    // Write extraction record
+    await options.extractionDb.create({
+      title: `${discoveryMethod === "serp_fallback" ? "SERP" : "Apollo"} reveal: ${candidate.name}`,
+      type: "people",
+      source: discoveryMethod === "serp_fallback" ? "brave_serp" : "apollo_reveal",
+      status: personStatus === "failed" ? "rejected" : "accepted",
+      rawData: JSON.stringify({
+        apollo_person_id: candidate.apollo_person_id,
+        linkedin_url: candidate.linkedin_url,
+        email: candidate.email,
+        email_status: candidate.email_status,
+        title: candidate.title,
+        headline: candidate.headline,
+        confidence: candidate.confidence,
+        outreach_relevance: candidate.outreach_relevance,
+      }),
+      sourceNotes: `${discoveryMethod} | ${candidate.evidence_summary}${outreachBrief ? ` | Outreach: ${outreachBrief}` : ""}`,
+      aiValidation: candidate.evidence_summary,
+      creditsUsed: candidate.apollo_person_id ? 1 : 0,
+      personPageId: pageId,
+      companyPageId: companyRow.pageId,
+      campaignPageId: sourceCampaignPageId || undefined,
     });
 
     if (isPrimary) primaryPersonPageId = pageId;
