@@ -75,116 +75,162 @@ npx tsx src/cleanup-pipeline.ts audit    # verify everything
 
 ## Complete Pipeline — End to End
 
+### Pipeline Overview
+
+```mermaid
+flowchart TB
+    subgraph S0["Stage 0: Kickstarter Extraction"]
+        S0A[Kickstarter URLs] --> S0B[stats.json\nbackers, pledged, state]
+        S0A --> S0C[Brave Search\ncampaign name, creator, external link]
+        S0B --> S0D[(Campaign Outreach)]
+        S0C --> S0D
+    end
+
+    subgraph S1["Stage 1: Company Enrichment"]
+        S1A[Campaign Outreach] --> S1B{Valid domain?}
+        S1B -->|Yes| S1C[Scrape homepage\n+ /contact, /about]
+        S1B -->|Blocked/Missing| S1D[Apollo Org Search\n1 credit]
+        S1C --> S1E{Scrape failed?}
+        S1E -->|Yes| S1D
+        S1E -->|No| S1F[Extract socials\nemail, contact form]
+        S1D --> S1G[(Company Enriched)]
+        S1F --> S1G
+    end
+
+    subgraph S2["Stage 2: People Enrichment"]
+        S2A[Company Enriched] --> S2B["Pass A: Apollo Search (FREE)\nA1: domain + founder + titles\nA2: company name + founder\nA3: founder + keyword"]
+        S2B --> S2C["AI: Preliminary Score\npick max 2 to reveal"]
+        S2C --> S2D["Apollo Reveal\n1 credit each"]
+        S2D --> S2E["AI: Validate + Score\nhigh / medium / low"]
+        S2E --> S2F{Medium+ found?}
+        S2F -->|Yes| S2J
+        S2F -->|No| S2G["Pass B: Operator titles\nPass C: Apollo Org resolve\nPass D: Brave SERP fallback"]
+        S2G --> S2J["AI Gates:\nData quality\nMerge decision\nOutreach brief"]
+        S2J --> S2K[(People Enriched)]
+        S2J --> S2L[(Extractions)]
+    end
+
+    subgraph S3["Stage 3: Normalization + Dedup"]
+        S3A["fix-names\nstrip title/company from names"] --> S3B["Fix Full Name\n= First + Last"]
+        S3B --> S3C["Dedup by Apollo ID\nkeep best, merge fields"]
+        S3C --> S3D["Dedup by name + company\ncross-source duplicates"]
+        S3D --> S3E["Archive orphans\nno company + no campaign"]
+    end
+
+    subgraph S4["Stage 4: Relation Linking + Audit"]
+        S4A["Link companies ↔ campaigns\nby name match"] --> S4B["Link people → companies\ncampaign / email / text match"]
+        S4B --> S4C["Link people → campaigns\ninherit from company"]
+        S4C --> S4D["Final Audit\n0 orphans, 0 dupes\nall relations intact"]
+    end
+
+    S0 --> S1
+    S1 --> S2
+    S2 --> S3
+    S3 --> S4
+
+    style S0 fill:#e8f5e9,stroke:#2e7d32
+    style S1 fill:#e3f2fd,stroke:#1565c0
+    style S2 fill:#fff3e0,stroke:#e65100
+    style S3 fill:#f3e5f5,stroke:#7b1fa2
+    style S4 fill:#fce4ec,stroke:#c62828
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         FULL ENRICHMENT PROCESS                             │
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ STAGE 1: Company Enrichment                                          │  │
-│  │   npm run enrich:companies                                           │  │
-│  │                                                                      │  │
-│  │   For each campaign:                                                 │  │
-│  │   1. Extract domain from External Link                               │  │
-│  │   2. Check domain against blocklist                                  │  │
-│  │   3. Scrape homepage + sub-pages (/contact, /about, /contact-us)     │  │
-│  │      → Extract: socials, business email, contact form URL            │  │
-│  │   4. If scrape fails → Apollo Org Search fallback (1 credit)         │  │
-│  │   5. Write to Company Enriched                                       │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-│                               ↓                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ STAGE 2: People Enrichment                                           │  │
-│  │   npm run enrich:people                                              │  │
-│  │                                                                      │  │
-│  │   For each company:                                                  │  │
-│  │   ① AI: Normalize founder names from campaign data                   │  │
-│  │   ② Pass A: Apollo search — domain + name + titles (FREE)            │  │
-│  │      A1: domain + founder + founder titles                           │  │
-│  │      A2: company name + founder (if A1 empty)                        │  │
-│  │      A3: founder name + company keyword (if A2 empty)                │  │
-│  │   ③ AI: Preliminary score — pick max 2 to reveal                     │  │
-│  │   ④ Apollo Reveal — get full profile (1 credit each)                 │  │
-│  │   ⑤ AI: Validate — does person work at target company?               │  │
-│  │   ⑥ AI: Score & rank — high/medium/low confidence                    │  │
-│  │      ↓                                                               │  │
-│  │   If medium+ found → skip to write                                   │  │
-│  │      ↓                                                               │  │
-│  │   ⑦ Pass B: Operator titles (partnerships, marketing, BD)            │  │
-│  │   ⑧ Pass C: Apollo Org resolve → search by org ID                    │  │
-│  │   ⑨ Pass D: Brave Search SERP fallback (max confidence: medium)      │  │
-│  │      ↓                                                               │  │
-│  │   ⑩ AI: Data quality gate (real person? valid LinkedIn?)             │  │
-│  │   ⑪ AI: Merge decision (duplicate check against existing records)    │  │
-│  │   ⑫ AI: Outreach brief (primary candidate only)                      │  │
-│  │   ⑬ AI: Company intelligence summary                                 │  │
-│  │   ⑭ Write to People Enriched + update Company roll-up                │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-│                               ↓                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ STAGE 2b: Reveal SERP Candidates                                     │  │
-│  │   npx tsx src/index.ts reveal-serp                                   │  │
-│  │                                                                      │  │
-│  │   For each SERP-only person (has LinkedIn, no Apollo ID):            │  │
-│  │   1. Apollo Reveal by LinkedIn URL (1 credit)                        │  │
-│  │   2. Update person with full profile data                            │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-│                               ↓                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ STAGE 3: Name Normalization + Dedup                                  │  │
-│  │   npx tsx src/fix-names-and-dedup.ts fix-names                       │  │
-│  │   npx tsx src/fix-names-and-dedup.ts dedup                           │  │
-│  │                                                                      │  │
-│  │   3a. Fix dirty names from SERP and Apollo:                          │  │
-│  │       "John Smith - CEO - Acme Corp" → Full Name: "John Smith"       │  │
-│  │       Extract title: "CEO", fix capitalization                       │  │
-│  │       Separators handled: " - ", " — ", " | "                        │  │
-│  │       Patterns: "Name - Title at Company", "Name - Title - Company"  │  │
-│  │                                                                      │  │
-│  │   3b. Fix Full Name = First Name + Last Name (any mismatches)        │  │
-│  │       npx tsx src/migrate-relations.ts 4                             │  │
-│  │                                                                      │  │
-│  │   3c. Dedup by Apollo Person ID:                                     │  │
-│  │       npx tsx src/cleanup-pipeline.ts phase1                         │  │
-│  │       Score each: email (+8), LinkedIn (+5), Apollo ID (+10), etc.   │  │
-│  │       Keep highest-scored, merge fields from losers, archive rest    │  │
-│  │                                                                      │  │
-│  │   3d. Dedup by normalized name + company:                            │  │
-│  │       npx tsx src/fix-names-and-dedup.ts dedup                       │  │
-│  │       Groups by lowercase(Full Name) + company ID                    │  │
-│  │       Same scoring + merge + archive logic                           │  │
-│  │                                                                      │  │
-│  │   3e. Archive orphans (no company AND no campaign):                  │  │
-│  │       npx tsx src/cleanup-pipeline.ts archive-orphans                │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-│                               ↓                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ STAGE 4: Relation Linking + Final Audit                              │  │
-│  │                                                                      │  │
-│  │   4a. Link companies ↔ campaigns (by name match):                    │  │
-│  │       npx tsx src/cleanup-pipeline.ts phase4                         │  │
-│  │                                                                      │  │
-│  │   4b. Link people → companies (via campaign, email domain, or text): │  │
-│  │       npx tsx src/cleanup-pipeline.ts phase5                         │  │
-│  │       Strategy 1: Infer from campaign relation                       │  │
-│  │       Strategy 2: Match by email domain → company domain             │  │
-│  │       Strategy 3: Match company name in evidence/headline text       │  │
-│  │                                                                      │  │
-│  │   4c. Link people → campaigns (inherit from company):                │  │
-│  │       npx tsx src/cleanup-pipeline.ts phase6                         │  │
-│  │                                                                      │  │
-│  │   4d. Final audit — verify zero orphans, zero dupes:                 │  │
-│  │       npx tsx src/cleanup-pipeline.ts audit                          │  │
-│  │                                                                      │  │
-│  │   Expected results:                                                  │  │
-│  │     Nameless people:      0 ✓                                        │  │
-│  │     Duplicate Apollo IDs: 0 ✓                                        │  │
-│  │     No Linked Company:    0 ✓                                        │  │
-│  │     No Campaigns:         0 ✓                                        │  │
-│  │     "not found" LinkedIn: 0 ✓                                        │  │
-│  │     Every company → campaign ✓                                       │  │
-│  │     Every campaign → company ✓                                       │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
+
+### Database Relationships
+
+```mermaid
+erDiagram
+    CAMPAIGN_OUTREACH ||--o{ COMPANY_ENRICHED : "Companies (dual)"
+    CAMPAIGN_OUTREACH ||--o{ PEOPLE_ENRICHED : "People (dual)"
+    COMPANY_ENRICHED ||--o{ PEOPLE_ENRICHED : "All People / Linked Company (dual)"
+    COMPANY_ENRICHED ||--o| PEOPLE_ENRICHED : "Best Person"
+    COMPANY_ENRICHED ||--o{ EXTRACTIONS : "Extractions (dual)"
+    PEOPLE_ENRICHED ||--o{ EXTRACTIONS : "Extractions (dual)"
+    CAMPAIGN_OUTREACH ||--o{ EXTRACTIONS : "Campaign"
+
+    CAMPAIGN_OUTREACH {
+        title Campaign_Name
+        url Kickstarter_URL
+        url External_Link
+        number Backers
+        number Amount_Pledged
+        select Currency
+        date Campaign_Start_Date
+    }
+
+    COMPANY_ENRICHED {
+        title Campaign_Name
+        text Company_Name
+        url Company_Domain
+        text Company_Description
+        text Socials_x6
+        text Generic_Business_Email
+        url Contact_Form_URL
+        select Enrichment_Status
+        select Best_Outreach_Path
+        select Company_Outreach_Readiness
+    }
+
+    PEOPLE_ENRICHED {
+        title Full_Name
+        text First_Name
+        text Last_Name
+        text Job_Title
+        text Linkedin_Person_Url
+        text Work_Emails
+        text Apollo_Person_ID
+        select Match_Confidence
+        select Enrich_Status
+    }
+
+    EXTRACTIONS {
+        title Extraction
+        select Type
+        select Source
+        select Status
+        date Extracted_At
+        text Raw_Data
+        text Source_Notes
+        text AI_Validation
+        number Credits_Used
+    }
+```
+
+### Stage 2 Detail: People Enrichment Decision Flow
+
+```mermaid
+flowchart LR
+    A[Company] --> B["AI: Normalize\nfounder names"]
+
+    B --> C["Pass A1\ndomain + founder\n+ titles"]
+    C --> D{Results?}
+    D -->|No| E["Pass A2\ncompany name\n+ founder"]
+    E --> F{Results?}
+    F -->|No| G["Pass A3\nfounder + keyword"]
+    D -->|Yes| H
+    F -->|Yes| H
+    G --> H
+
+    H["AI: Prelim Score\nmax 2 reveals"] --> I["Apollo Reveal\n1 credit each"]
+    I --> J["AI: Validate\nright company?"]
+    J --> K["AI: Score\nhigh/med/low"]
+
+    K --> L{Medium+?}
+    L -->|Yes| Q
+    L -->|No| M["Pass B\noperator titles"]
+    M --> N["Pass C\nApollo Org"]
+    N --> O["Pass D\nBrave SERP"]
+    O --> Q
+
+    Q["AI: Quality Gate"] --> R{Pass?}
+    R -->|No| S[Rejected]
+    R -->|Yes| T["AI: Merge Decision"]
+    T --> U["Write to\nPeople Enriched"]
+    T --> V["Write to\nExtractions"]
+
+    style A fill:#e3f2fd
+    style S fill:#ffcdd2
+    style U fill:#e8f5e9
+    style V fill:#fff9c4
 ```
 
 ---
