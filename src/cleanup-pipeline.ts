@@ -3,6 +3,7 @@
  *
  * Usage: tsx src/cleanup-pipeline.ts <phase>
  *   phase1  — Dedup people by Apollo Person ID (keep best, archive rest)
+ *   phase1b — Dedup people by LinkedIn URL (catches different Apollo IDs, same person)
  *   phase2  — Archive remaining nameless people (no First/Last Name after dedup)
  *   phase3  — Clean dirty data (clear "not found" LinkedIn URLs)
  *   phase4  — Link companies ↔ campaigns by name match
@@ -123,6 +124,94 @@ function scoreRecord(p: Page): number {
   return score;
 }
 
+// ========== Best-of-both field merge: pulls non-empty fields from losers into winner ==========
+function mergeLosersIntoWinner(winner: Page, losers: Page[]): Record<string, any> {
+  const mergeUpdates: Record<string, any> = {};
+
+  const winnerFirstName = getRichText(winner, "First Name").trim();
+  const winnerLastName = getRichText(winner, "Last Name").trim();
+  const winnerEmail = getRichText(winner, "Work Emails").trim();
+  const winnerLinkedin = getRichText(winner, "Linkedin Person Url").trim();
+  const winnerJobTitle = getRichText(winner, "Job Title").trim();
+  const winnerHeadline = getRichText(winner, "Headline").trim();
+  const winnerCompanyIds = getRelationIds(winner, "Linked Company");
+  const winnerCampaignIds = getRelationIds(winner, "Campaigns");
+
+  for (const loser of losers) {
+    if (!winnerFirstName) {
+      const v = getRichText(loser, "First Name").trim();
+      if (v && !mergeUpdates["First Name"]) {
+        mergeUpdates["First Name"] = { rich_text: [{ text: { content: v } }] };
+      }
+    }
+    if (!winnerLastName) {
+      const v = getRichText(loser, "Last Name").trim();
+      if (v && !mergeUpdates["Last Name"]) {
+        mergeUpdates["Last Name"] = { rich_text: [{ text: { content: v } }] };
+      }
+    }
+    if (!winnerEmail) {
+      const v = getRichText(loser, "Work Emails").trim();
+      if (v && !mergeUpdates["Work Emails"]) {
+        mergeUpdates["Work Emails"] = { rich_text: [{ text: { content: v } }] };
+      }
+    }
+    if (!winnerLinkedin || winnerLinkedin.toLowerCase() === "not found") {
+      const v = getRichText(loser, "Linkedin Person Url").trim();
+      if (v && v.toLowerCase() !== "not found" && !mergeUpdates["Linkedin Person Url"]) {
+        mergeUpdates["Linkedin Person Url"] = { rich_text: [{ text: { content: v } }] };
+      }
+    }
+    if (!winnerJobTitle) {
+      const v = getRichText(loser, "Job Title").trim();
+      if (v && !mergeUpdates["Job Title"]) {
+        mergeUpdates["Job Title"] = { rich_text: [{ text: { content: v } }] };
+      }
+    }
+    if (!winnerHeadline) {
+      const v = getRichText(loser, "Headline").trim();
+      if (v && !mergeUpdates["Headline"]) {
+        mergeUpdates["Headline"] = { rich_text: [{ text: { content: v } }] };
+      }
+    }
+    if (winnerCompanyIds.length === 0) {
+      const loserCompanyIds = getRelationIds(loser, "Linked Company");
+      if (loserCompanyIds.length > 0 && !mergeUpdates["Linked Company"]) {
+        mergeUpdates["Linked Company"] = { relation: loserCompanyIds.map(id => ({ id })) };
+      }
+    }
+    const loserCampaignIds = getRelationIds(loser, "Campaigns");
+    if (loserCampaignIds.length > 0) {
+      const existingCampaignIds = new Set(winnerCampaignIds);
+      if (mergeUpdates["Campaigns"]) {
+        for (const r of mergeUpdates["Campaigns"].relation) existingCampaignIds.add(r.id);
+      }
+      const newIds = loserCampaignIds.filter(id => !existingCampaignIds.has(id));
+      if (newIds.length > 0) {
+        const allIds = [...existingCampaignIds, ...newIds];
+        mergeUpdates["Campaigns"] = { relation: allIds.map(id => ({ id })) };
+      }
+    }
+  }
+
+  // Fix Full Name if winner has URL/garbage title but we recovered names from losers
+  const winnerFullName = getTitle(winner);
+  if (winnerFullName.includes("kickstarter.com") || winnerFullName.includes("::")) {
+    const fn = mergeUpdates["First Name"]
+      ? mergeUpdates["First Name"].rich_text[0].text.content
+      : winnerFirstName;
+    const ln = mergeUpdates["Last Name"]
+      ? mergeUpdates["Last Name"].rich_text[0].text.content
+      : winnerLastName;
+    if (fn || ln) {
+      const fullName = [fn, ln].filter(Boolean).join(" ");
+      mergeUpdates["Full Name"] = { title: [{ text: { content: fullName } }] };
+    }
+  }
+
+  return mergeUpdates;
+}
+
 // ========== PHASE 1: Dedup by Apollo ID ==========
 async function phase1() {
   console.log("\n=== PHASE 1: Dedup People by Apollo Person ID ===\n");
@@ -147,108 +236,21 @@ async function phase1() {
   for (const [apolloId, dupes] of byApolloId) {
     if (dupes.length <= 1) continue;
 
-    // Score each and sort descending
     const scored = dupes.map(p => ({ page: p, score: scoreRecord(p) }));
     scored.sort((a, b) => b.score - a.score);
 
     const winner = scored[0].page;
     const winnerName = getTitle(winner);
-    const losers = scored.slice(1);
+    const losers = scored.slice(1).map(s => s.page);
 
-    // Merge: fill empty fields in winner from losers (best-of-both)
-    const mergeUpdates: Record<string, any> = {};
-    const winnerFirstName = getRichText(winner, "First Name").trim();
-    const winnerLastName = getRichText(winner, "Last Name").trim();
-    const winnerEmail = getRichText(winner, "Work Emails").trim();
-    const winnerLinkedin = getRichText(winner, "Linkedin Person Url").trim();
-    const winnerJobTitle = getRichText(winner, "Job Title").trim();
-    const winnerHeadline = getRichText(winner, "Headline").trim();
-    const winnerCompanyIds = getRelationIds(winner, "Linked Company");
-    const winnerCampaignIds = getRelationIds(winner, "Campaigns");
+    const mergeUpdates = mergeLosersIntoWinner(winner, losers);
 
-    // Collect best values from losers
-    for (const { page: loser } of losers) {
-      if (!winnerFirstName) {
-        const v = getRichText(loser, "First Name").trim();
-        if (v && !mergeUpdates["First Name"]) {
-          mergeUpdates["First Name"] = { rich_text: [{ text: { content: v } }] };
-        }
-      }
-      if (!winnerLastName) {
-        const v = getRichText(loser, "Last Name").trim();
-        if (v && !mergeUpdates["Last Name"]) {
-          mergeUpdates["Last Name"] = { rich_text: [{ text: { content: v } }] };
-        }
-      }
-      if (!winnerEmail) {
-        const v = getRichText(loser, "Work Emails").trim();
-        if (v && !mergeUpdates["Work Emails"]) {
-          mergeUpdates["Work Emails"] = { rich_text: [{ text: { content: v } }] };
-        }
-      }
-      if (!winnerLinkedin || winnerLinkedin.toLowerCase() === "not found") {
-        const v = getRichText(loser, "Linkedin Person Url").trim();
-        if (v && v.toLowerCase() !== "not found" && !mergeUpdates["Linkedin Person Url"]) {
-          mergeUpdates["Linkedin Person Url"] = { rich_text: [{ text: { content: v } }] };
-        }
-      }
-      if (!winnerJobTitle) {
-        const v = getRichText(loser, "Job Title").trim();
-        if (v && !mergeUpdates["Job Title"]) {
-          mergeUpdates["Job Title"] = { rich_text: [{ text: { content: v } }] };
-        }
-      }
-      if (!winnerHeadline) {
-        const v = getRichText(loser, "Headline").trim();
-        if (v && !mergeUpdates["Headline"]) {
-          mergeUpdates["Headline"] = { rich_text: [{ text: { content: v } }] };
-        }
-      }
-      // Merge company relations
-      if (winnerCompanyIds.length === 0) {
-        const loserCompanyIds = getRelationIds(loser, "Linked Company");
-        if (loserCompanyIds.length > 0 && !mergeUpdates["Linked Company"]) {
-          mergeUpdates["Linked Company"] = { relation: loserCompanyIds.map(id => ({ id })) };
-        }
-      }
-      // Merge campaign relations — collect ALL unique campaign IDs
-      const loserCampaignIds = getRelationIds(loser, "Campaigns");
-      if (loserCampaignIds.length > 0) {
-        const existingCampaignIds = new Set(winnerCampaignIds);
-        if (mergeUpdates["Campaigns"]) {
-          for (const r of mergeUpdates["Campaigns"].relation) existingCampaignIds.add(r.id);
-        }
-        const newIds = loserCampaignIds.filter(id => !existingCampaignIds.has(id));
-        if (newIds.length > 0) {
-          const allIds = [...existingCampaignIds, ...newIds];
-          mergeUpdates["Campaigns"] = { relation: allIds.map(id => ({ id })) };
-        }
-      }
-    }
-
-    // Also fix Full Name if winner is nameless but we got names from merge
-    const winnerFullName = getTitle(winner);
-    if (winnerFullName.includes("kickstarter.com") || winnerFullName.includes("::")) {
-      const fn = mergeUpdates["First Name"]
-        ? mergeUpdates["First Name"].rich_text[0].text.content
-        : winnerFirstName;
-      const ln = mergeUpdates["Last Name"]
-        ? mergeUpdates["Last Name"].rich_text[0].text.content
-        : winnerLastName;
-      if (fn || ln) {
-        const fullName = [fn, ln].filter(Boolean).join(" ");
-        mergeUpdates["Full Name"] = { title: [{ text: { content: fullName } }] };
-      }
-    }
-
-    // Apply merge updates to winner
     if (Object.keys(mergeUpdates).length > 0) {
       await update(winner.id, mergeUpdates);
       merged++;
     }
 
-    // Archive losers
-    for (const { page: loser } of losers) {
+    for (const loser of losers) {
       await archivePage(loser.id);
       archived++;
       await sleep(350);
@@ -262,6 +264,64 @@ async function phase1() {
   console.log(`  Duplicate groups processed: ${kept}`);
   console.log(`  Records archived: ${archived}`);
   console.log(`  Winners with merged data: ${merged}`);
+  console.log(`  People remaining: ~${people.length - archived}`);
+}
+
+// ========== PHASE 1b: Dedup by LinkedIn URL ==========
+async function phase1b(dryRun: boolean) {
+  console.log(`\n=== PHASE 1b: Dedup People by LinkedIn URL ${dryRun ? "(DRY RUN — no writes)" : ""} ===\n`);
+
+  const people = await queryAll(PEOPLE_DB);
+  console.log(`Fetched ${people.length} people.\n`);
+
+  const byLinkedin = new Map<string, Page[]>();
+  for (const p of people) {
+    const url = getRichText(p, "Linkedin Person Url").trim();
+    if (!url || url.toLowerCase() === "not found") continue;
+    const normalized = url.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
+    const existing = byLinkedin.get(normalized) ?? [];
+    existing.push(p);
+    byLinkedin.set(normalized, existing);
+  }
+
+  let archived = 0;
+  let kept = 0;
+  let merged = 0;
+
+  for (const [url, dupes] of byLinkedin) {
+    if (dupes.length <= 1) continue;
+
+    const scored = dupes.map(p => ({ page: p, score: scoreRecord(p) }));
+    scored.sort((a, b) => b.score - a.score);
+
+    const winner = scored[0].page;
+    const winnerName = getTitle(winner);
+    const losers = scored.slice(1).map(s => s.page);
+
+    const mergeUpdates = mergeLosersIntoWinner(winner, losers);
+
+    if (Object.keys(mergeUpdates).length > 0) {
+      if (!dryRun) await update(winner.id, mergeUpdates);
+      merged++;
+    }
+
+    for (const loser of losers) {
+      if (!dryRun) {
+        await archivePage(loser.id);
+        await sleep(350);
+      }
+      archived++;
+    }
+
+    kept++;
+    const loserNames = losers.map(l => `"${getTitle(l)}"`).join(", ");
+    console.log(`  ${url}: kept "${winnerName}" (score ${scored[0].score}), ${dryRun ? "would archive" : "archived"} ${losers.length} dupes [${loserNames}]${Object.keys(mergeUpdates).length > 0 ? ` + ${dryRun ? "would merge" : "merged"} fields: ${Object.keys(mergeUpdates).join(", ")}` : ""}`);
+  }
+
+  console.log(`\nPhase 1b results${dryRun ? " (DRY RUN)" : ""}:`);
+  console.log(`  Duplicate groups ${dryRun ? "found" : "processed"}: ${kept}`);
+  console.log(`  Records ${dryRun ? "would be archived" : "archived"}: ${archived}`);
+  console.log(`  Winners ${dryRun ? "would have" : "with"} merged data: ${merged}`);
   console.log(`  People remaining: ~${people.length - archived}`);
 }
 
@@ -719,14 +779,16 @@ async function finalAudit() {
 
 // ========== MAIN ==========
 const phase = process.argv[2];
+const dryRun = process.argv.includes("--dry-run");
 if (!phase) {
-  console.log("Usage: tsx src/cleanup-pipeline.ts <phase>");
-  console.log("Phases: phase1, phase2, phase3, phase4, phase5, phase6, audit");
+  console.log("Usage: tsx src/cleanup-pipeline.ts <phase> [--dry-run]");
+  console.log("Phases: phase1, phase1b, phase2, phase3, phase4, phase5, phase6, audit");
   process.exit(1);
 }
 
 switch (phase) {
   case "phase1": await phase1(); break;
+  case "phase1b": await phase1b(dryRun); break;
   case "phase2": await phase2(); break;
   case "archive-orphans": await archiveOrphans(); break;
   case "phase3": await phase3(); break;
